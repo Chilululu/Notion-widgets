@@ -1,0 +1,373 @@
+<!--
+Notion Diamonds Widget
+Single-file HTML widget you can host and embed in Notion (Embed block / iframe).
+
+This file contains two variants:
+1) Local-only widget (runs entirely in the browser, stores tasks & diamonds in localStorage) — easiest to use.
+2) Notion-connected widget (front-end + example serverless function) — syncs checkboxes from a Notion database. Requires creating a Notion integration and hosting a small serverless endpoint to keep your Notion token secret.
+
+How to use:
+- Quick (no Notion API): Host this file (e.g. GitHub Pages, Netlify, Vercel static site), then paste the published URL into Notion -> "+ / Embed". The Local mode will work right away.
+- Full Notion integration: Follow the instructions in the "NOTION INTEGRATION" section below, deploy the serverless function, then set `useNotionIntegration = true` in the UI to fetch tasks directly from your Notion database.
+
+Security note: If you use Notion API, store your NOTION_TOKEN on the server (serverless env var). Do NOT embed your Notion secret directly into a public client-side file.
+-->
+
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Diamonds Widget for Notion</title>
+  <style>
+    :root{
+      --bg:#0f1724; --card:#0b1320; --accent:#7c3aed; --glass:rgba(255,255,255,0.03);
+      --muted:#98a0b3; --text:#e6eef8; --success:#22c55e;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:linear-gradient(180deg,#051022 0%, #08122a 100%); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px}
+    .widget{width:920px; max-width:96vw; background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); border-radius:14px; box-shadow:0 8px 30px rgba(2,6,23,0.7); padding:18px; position:relative}
+    header{display:flex; align-items:center; gap:12px}
+    .logo{display:flex; gap:8px; align-items:center}
+    .diamond{width:46px;height:46px; display:flex; align-items:center; justify-content:center}
+    .title{font-weight:700; font-size:20px}
+    .subtitle{color:var(--muted); font-size:12px}
+    .top-right{position:absolute; right:18px; top:18px; display:flex; gap:10px; align-items:center}
+    .count{background:var(--glass); padding:8px 12px; border-radius:999px; display:flex; gap:8px; align-items:center; font-weight:700}
+    main{display:grid; grid-template-columns: 1fr 320px; gap:18px; margin-top:16px}
+    .card{background:rgba(255,255,255,0.02); border-radius:10px; padding:14px}
+    .tasks{min-height:200px}
+    .task{display:flex; gap:12px; align-items:flex-start; padding:8px 6px; border-radius:8px}
+    .task label{display:flex; gap:10px; align-items:center; cursor:pointer; width:100%}
+    input[type=checkbox]{width:18px;height:18px}
+    .task-title{font-size:14px}
+    .controls{display:flex; gap:8px; margin-top:8px}
+    .btn{background:var(--accent); color:white; border:none; padding:8px 10px; border-radius:8px; cursor:pointer}
+    .btn.ghost{background:transparent; border:1px solid rgba(255,255,255,0.06)}
+    .shop-item{display:flex; justify-content:space-between; align-items:center; padding:8px; border-radius:8px}
+    .muted{color:var(--muted); font-size:13px}
+    .small{font-size:13px}
+    footer{margin-top:12px; color:var(--muted); font-size:13px}
+    .badge{background:rgba(255,255,255,0.03); padding:6px 8px; border-radius:999px}
+    .notice{background:#10202b; padding:8px; border-radius:8px; color:var(--muted); font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="widget" id="widget">
+    <header>
+      <div class="logo">
+        <div class="diamond">💎</div>
+        <div>
+          <div class="title">Daily Diamonds</div>
+          <div class="subtitle">在 Notion 的任務完成時獲得鑽石（示範）</div>
+        </div>
+      </div>
+      <div class="top-right">
+        <div class="count" id="diamondDisplay"><span id="diamondIcon">💎</span> <span id="diamondCount">0</span></div>
+      </div>
+    </header>
+
+    <main>
+      <!-- Left: Tasks -->
+      <div class="card tasks">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong>Tasks</strong>
+          <div class="small muted">模式：<span id="modeLabel">Local</span></div>
+        </div>
+
+        <div style="margin-top:8px; display:flex; gap:8px">
+          <input id="newTaskInput" placeholder="Add a task (this widget)" style="flex:1; padding:8px; border-radius:8px; background:transparent; border:1px solid rgba(255,255,255,0.04); color:var(--text)" />
+          <button class="btn" id="addBtn">Add</button>
+        </div>
+
+        <div id="tasksList" style="margin-top:10px"></div>
+
+        <div class="controls">
+          <button class="btn ghost" id="clearCompleted">Clear completed</button>
+          <button class="btn ghost" id="resetAll">Reset all</button>
+          <button class="btn" id="toggleMode">Use Notion DB</button>
+        </div>
+
+        <div style="margin-top:10px">
+          <div class="notice">提示：若要把 Notion 裡的勾選同步到此 widget，請使用 Notion integration（需部署一個 serverless 端點）。點 "Use Notion DB" 會顯示切換步驟。</div>
+        </div>
+      </div>
+
+      <!-- Right: Shop -->
+      <div class="card">
+        <strong>Reward Shop</strong>
+        <div class="muted small">用鑽石兌換你想吃的東西</div>
+
+        <div style="margin-top:10px" id="shopList"></div>
+
+        <div style="margin-top:12px; display:flex; gap:8px; align-items:center">
+          <div class="small muted">總鑽石：</div>
+          <div class="badge" id="diamondSummary">0</div>
+        </div>
+
+        <footer>
+          <div class="small muted">小提醒：每勾選一個任務預設 +1 鑽石。若要改成別的值，可在設定中調整。</div>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    /*********************
+      Configuration
+    *********************/
+    const DIAMOND_PER_TASK = 1; // 每個任務多少鑽石
+
+    // If you want to connect to Notion: deploy the serverless endpoint described below and set this to true.
+    // The widget will then fetch tasks from the endpoint instead of localStorage.
+    let useNotionIntegration = false;
+    // Example endpoint path (you'll change this after deploying your serverless function):
+    let NOTION_TASKS_ENDPOINT = '/api/notion-tasks';
+
+    /*********************
+      State & helpers
+    *********************/
+    const STORAGE_KEY = 'dd_widget_v1';
+
+    function uid(){ return Math.random().toString(36).slice(2,9) }
+
+    function loadState(){
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(raw) return JSON.parse(raw);
+      return { diamonds:0, tasks: [] }
+    }
+    function saveState(s){ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)) }
+
+    let state = loadState();
+
+    /*********************
+      UI render
+    *********************/
+    const tasksList = document.getElementById('tasksList');
+    const diamondCountEl = document.getElementById('diamondCount');
+    const diamondSummary = document.getElementById('diamondSummary');
+    const modeLabel = document.getElementById('modeLabel');
+
+    function render(){
+      diamondCountEl.textContent = state.diamonds;
+      diamondSummary.textContent = state.diamonds;
+      tasksList.innerHTML = '';
+
+      if(state.tasks.length === 0){
+        tasksList.innerHTML = '<div class="muted">目前沒有任務。新增一個或開啟 Notion 同步。</div>';
+      }
+
+      state.tasks.forEach(t => {
+        const div = document.createElement('div'); div.className='task';
+        const id = 'cb_'+t.id;
+        const label = document.createElement('label');
+        const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = !!t.checked; cb.id = id;
+        cb.addEventListener('change', e=> onCheckChange(t.id, e.target.checked));
+        const span = document.createElement('div'); span.style.flex='1';
+        const title = document.createElement('div'); title.className='task-title'; title.textContent = t.title;
+        const meta = document.createElement('div'); meta.className='muted small'; meta.style.marginTop='6px'; meta.textContent = t.note || '';
+        span.appendChild(title); if(t.note) span.appendChild(meta);
+        label.appendChild(cb); label.appendChild(span);
+
+        if(!useNotionIntegration){
+          const edit = document.createElement('button'); edit.className='btn ghost'; edit.textContent='Edit'; edit.style.marginLeft='8px';
+          edit.addEventListener('click', ()=> editTask(t.id));
+          const del = document.createElement('button'); del.className='btn ghost'; del.textContent='Del'; del.style.marginLeft='6px';
+          del.addEventListener('click', ()=> deleteTask(t.id));
+          div.appendChild(label); div.appendChild(edit); div.appendChild(del);
+        } else {
+          div.appendChild(label);
+        }
+
+        tasksList.appendChild(div);
+      })
+
+      modeLabel.textContent = useNotionIntegration ? 'Notion' : 'Local';
+    }
+
+    /*********************
+      Task actions
+    *********************/
+    function addTask(title){
+      const t = { id: uid(), title, checked:false, note: '' };
+      state.tasks.push(t); saveState(state); render();
+    }
+
+    function editTask(id){
+      const t = state.tasks.find(x=>x.id===id);
+      if(!t) return;
+      const newTitle = prompt('Edit task', t.title);
+      if(newTitle!==null){ t.title = newTitle; saveState(state); render(); }
+    }
+
+    function deleteTask(id){
+      if(!confirm('Delete this task?')) return;
+      state.tasks = state.tasks.filter(x=>x.id!==id); saveState(state); render();
+    }
+
+    function onCheckChange(id, checked){
+      // find task and detect previous state
+      const t = state.tasks.find(x=>x.id===id);
+      if(!t) return;
+      const prev = !!t.checked;
+      t.checked = checked;
+
+      // add/subtract diamonds only if state changed
+      if(!prev && checked){ state.diamonds += DIAMOND_PER_TASK; }
+      else if(prev && !checked){ state.diamonds = Math.max(0, state.diamonds - DIAMOND_PER_TASK); }
+
+      saveState(state); render();
+    }
+
+    /*********************
+      Controls
+    *********************/
+    document.getElementById('addBtn').addEventListener('click', ()=>{
+      const v = document.getElementById('newTaskInput').value.trim();
+      if(!v) return alert('請輸入任務');
+      addTask(v); document.getElementById('newTaskInput').value = '';
+    });
+    document.getElementById('clearCompleted').addEventListener('click', ()=>{
+      const done = state.tasks.filter(t=>t.checked).length;
+      if(!done) return alert('沒有已完成的任務');
+      if(confirm('移除所有已完成的任務？這不會扣除已得鑽石')){
+        state.tasks = state.tasks.filter(t=>!t.checked); saveState(state); render();
+      }
+    });
+    document.getElementById('resetAll').addEventListener('click', ()=>{
+      if(!confirm('重設：清空所有任務與鑽石？')) return;
+      state = { diamonds:0, tasks:[] }; saveState(state); render();
+    });
+
+    document.getElementById('toggleMode').addEventListener('click', ()=>{
+      if(!useNotionIntegration){
+        // show short instructions
+        alert('若要連結 Notion：
+1) 建立 Notion Integration 並分享你的 database 給 integration
+2) 部署 serverless endpoint（示例程式在本檔案底部）並設定環境變數
+3) 將 endpoint URL 填入設定欄位
+
+啟動後點下「Use Notion DB」會嘗試從你的 endpoint 抓取任務。')
+      }
+      useNotionIntegration = !useNotionIntegration;
+      if(useNotionIntegration) fetchNotionTasks();
+      render();
+    });
+
+    /*********************
+      Shop
+    *********************/
+    const shopItems = [
+      {id:'s1', name:'珍珠奶茶', cost:5},
+      {id:'s2', name:'炸雞', cost:8},
+      {id:'s3', name:'小蛋糕', cost:4},
+      {id:'s4', name:'披薩一片', cost:6}
+    ];
+
+    function renderShop(){
+      const el = document.getElementById('shopList'); el.innerHTML='';
+      shopItems.forEach(it=>{
+        const row = document.createElement('div'); row.className='shop-item';
+        const left = document.createElement('div'); left.innerHTML = `<div><strong>${it.name}</strong></div><div class='muted small'>${it.cost} 💎</div>`;
+        const btn = document.createElement('button'); btn.className='btn'; btn.textContent='Redeem';
+        btn.addEventListener('click', ()=> redeem(it.id));
+        row.appendChild(left); row.appendChild(btn); el.appendChild(row);
+      })
+    }
+
+    function redeem(id){
+      const it = shopItems.find(x=>x.id===id);
+      if(!it) return;
+      if(state.diamonds < it.cost) return alert('鑽石不足');
+      if(!confirm(`花 ${it.cost} 鑽石兌換 ${it.name}？`)) return;
+      state.diamonds -= it.cost; saveState(state); render();
+      alert(`兌換完成！記得去吃 ${it.name} 😋`);
+    }
+
+    /*********************
+      Notion integration (client-side fetch from your serverless endpoint)
+      Serverless example is provided below (Node.js / Vercel).
+    *********************/
+    async function fetchNotionTasks(){
+      try{
+        const url = NOTION_TASKS_ENDPOINT;
+        const res = await fetch(url);
+        if(!res.ok) throw new Error('Fetch failed '+res.status);
+        const js = await res.json();
+        // Expected format: [{id, title, checked, note?}, ...]
+        state.tasks = js.map(x=>({ id: x.id||uid(), title: x.title||'(no title)', checked: !!x.checked, note: x.note||'' }));
+        // IMPORTANT: If you want diamonds to reflect checking events in Notion across time, you will need to decide how to count "new" checks.
+        // This simple implementation will: keep the local diamond count unchanged, and only allow diamonds to be earned when the user toggles checkboxes in the widget.
+        // Alternative: compute diamonds = number of checked tasks * DIAMOND_PER_TASK (uncomment below to use that behavior):
+        // state.diamonds = state.tasks.filter(t=>t.checked).length * DIAMOND_PER_TASK;
+
+        saveState(state); render();
+      }catch(err){
+        alert('從 Notion endpoint 抓取任務失敗: '+err.message);
+        useNotionIntegration = false; render();
+      }
+    }
+
+    /*********************
+      Init
+    *********************/
+    renderShop(); render();
+
+    // Expose a simple API for testing in console
+    window.ddwidget = { state, saveState, render };
+  </script>
+
+  <!--
+  -----------------------------
+  NOTION SERVERLESS EXAMPLE (Node.js / Vercel)
+  -----------------------------
+
+  Create a serverless endpoint that returns tasks from your Notion database in simple JSON.
+  1) Create Notion integration: https://www.notion.so/my-integrations
+  2) Share the database page with the integration.
+  3) Deploy this as a serverless function (Vercel / Netlify functions / Cloud Run ...)
+  4) Set environment variables: NOTION_TOKEN, DATABASE_ID
+
+  Example Vercel API route: /api/notion-tasks.js
+
+  (paste into a separate serverless file, do NOT put your token in the frontend)
+
+  // ------------------ begin serverless code ------------------
+  // const { Client } = require('@notionhq/client');
+  // module.exports = async (req, res) => {
+  //   const notion = new Client({ auth: process.env.NOTION_TOKEN });
+  //   const databaseId = process.env.DATABASE_ID;
+  //   try {
+  //     const response = await notion.databases.query({
+  //       database_id: databaseId,
+  //       // optional: filter / sorts
+  //     });
+  //     // Map Notion page properties to a simple shape
+  //     const tasks = response.results.map(page => {
+  //       const props = page.properties || {};
+  //       // assume title property named 'Name' and checkbox property named 'Done'
+  //       const title = (props.Name && props.Name.title && props.Name.title[0] && props.Name.title[0].plain_text) || '';
+  //       const checked = props.Done && props.Done.checkbox;
+  //       return { id: page.id, title, checked };
+  //     });
+  //     res.setHeader('Content-Type', 'application/json');
+  //     res.status(200).json(tasks);
+  //   } catch (e) {
+  //     console.error(e);
+  //     res.status(500).json({ error: e.message });
+  //   }
+  // };
+  // ------------------ end serverless code ------------------
+
+  Example notes:
+  - In Notion, ensure your database has a Title property (called Name) and a Checkbox property called Done (or change the server code mapping accordingly).
+  - On the frontend set NOTION_TASKS_ENDPOINT to your deployed endpoint URL, and toggle "Use Notion DB" in the widget.
+
+  Hosting suggestions:
+  - Static: GitHub Pages / Netlify / Vercel (static) for simple local-only widget.
+  - For Notion integration: Vercel or Netlify serverless functions are easy to deploy for the small serverless code above.
+
+  -->
+
+</body>
+</html>
